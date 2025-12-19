@@ -30,9 +30,10 @@ pub fn main() !void {
     try lined.rawModeStart();
     defer lined.rawModeStop();
 
+    std.debug.print("> ", .{});
     if (lined.editLine(gpa, &stdin.interface, &stdout.interface)) |line| {
         defer gpa.free(line);
-        std.debug.print("line: '{s}'\r\n", .{line}); // \r\n during raw mode
+        std.debug.print(":'{s}'\r\n", .{line}); // \r\n during raw mode
     } else |err| {
         std.debug.print("error: {t}\r\n", .{err}); // \r\n during raw mode
     }

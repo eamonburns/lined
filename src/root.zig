@@ -137,40 +137,56 @@ pub fn editLine(
             const esc = Escape.parse(input) catch return error.TODOBetterError;
             log.info("escape: '{any}'", .{esc});
             switch (esc) {
-                .cursor_up, .cursor_down, .cursor_forward, .cursor_back => {
-                    try esc.write(output);
-                    try output.flush();
+                // TODO: Handle going past end of screen
+                .cursor_forward => {
+                    if (i < line.items.len) {
+                        i += 1;
+                        try esc.write(output);
+                        try output.flush();
+                    }
+                },
+                .cursor_back => {
+                    if (i > 0) {
+                        i -= 1;
+                        try esc.write(output);
+                        try output.flush();
+                    }
                 },
                 else => {},
             }
             continue;
         }
         input.toss(1);
-        // NOTE: In raw mode, <enter> sends a "carriage return", rather than a "new line"
+        // In raw mode, <enter> sends a "carriage return", rather than a "new line"
         if (c == '\r') {
-            try output.writeAll("\r\n"); // NOTE: \r\n in raw mode
+            try output.writeAll(line.items[i..]);
+            try output.writeAll("\r\n"); // \r\n in raw mode
             try output.flush();
             break;
         }
         if (c == 'p') {
             log.info("asking for cursor position", .{});
-            const dsr: Escape = .device_status_report;
-            try dsr.write(output);
+            try Escape.write(.device_status_report, output);
             try output.flush();
             continue;
         }
 
-        try line.insert(gpa, i, c);
-        log.info("line: '{s}', i: {d}, len: {d}", .{ line.items, i, line.items.len });
-        i += 1;
         if (std.ascii.isControl(c)) {
-            log.info("{d}", .{c});
-            try output.print("<{d}>", .{c});
-        } else {
-            log.info("{d} ({c})", .{ c, c });
-            try output.writeByte(c);
+            log.info("control: {d}", .{c});
+            try output.flush(); // Do I need this?
+            continue;
+        }
+        try line.insert(gpa, i, c);
+        try output.writeByte(line.items[i]); // Write inserted character
+        i += 1;
+        if (line.items[i..].len > 0) {
+            // Save position, write characters after cursor, restore position
+            try output.writeAll("\x1b7"); // TODO: Don't hard code this
+            try output.writeAll(line.items[i..]);
+            try output.writeAll("\x1b8");
         }
         try output.flush();
+        log.info("line: '{s}', i: {d}, len: {d}", .{ line.items, i, line.items.len });
     } else |err| switch (err) {
         error.ReadFailed => |e| {
             log.err("{t}", .{e});

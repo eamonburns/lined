@@ -130,6 +130,45 @@ pub const Escape = union(enum) {
     ///
     /// Reports the cursor position (CPR) by transmitting `CSI <n> ; <m> R`, where `n` is the row and `m` is the column.
     device_status_report,
+    /// ???
+    /// Format: `CSI <n> ; <m> ~`
+    ///
+    /// Escape sequence encoding a key code `n` with possible modifiers `m` (default 1).
+    ///
+    /// Key code values:
+    /// - `1`: Home
+    /// - `2`: Insert
+    /// - `3`: Delete
+    /// - `4`: End
+    /// - `5`: PgUp
+    /// - `6`: PgDn
+    /// - `7`: Home
+    /// - `8`: End
+    /// - `9`: ...
+    /// - `10-15`: F0-F5
+    /// - `16`: ...
+    /// - `17-21`: F6-F10
+    /// - `22`: ...
+    /// - `23-26`: F11-F14
+    /// - `27`: ...
+    /// - `28-29`: F15-F16
+    /// - `30`: ...
+    /// - `31-26`: F17-F20
+    /// - `35`: ...
+    ///
+    /// The modifier value is 1 plus the sum of the modifier keys pressed:
+    /// - Shift: 1
+    /// - (Left) Alt: 2
+    /// - Control: 4
+    /// - Meta: 8
+    ///
+    /// After subtracting 1 from the result, it is a bitmap of the modifier keys pressed.
+    /// - `8 4 2 1`
+    /// - `m c a s`
+    ///
+    /// e.g. Shift + Alt + Control + Meta -> 1 + 1 + 2 + 4 + 8 -> 16
+    // NOTE: Name is kind of arbitrary
+    keycode_sequence: struct { u32, u32 },
     /// Unknown escape code. Contains escape code after CSI up to and
     /// including the final byte (e.g. `\x1b[1;2x` -> `1;2x`).
     ///
@@ -229,6 +268,10 @@ pub const Escape = union(enum) {
                 const n, const m = try parseParam2(esc_buf[param_start..inter_start]);
                 break :esc .{ .horizontal_vertical_position = .{ n orelse 1, m orelse 1 } };
             },
+            '~' => {
+                const n, const m = try parseParam2(esc_buf[param_start..inter_start]);
+                break :esc .{ .keycode_sequence = .{ n orelse return error.TODOBetterError, m orelse 1 } };
+            },
             'm' => break :esc .{ .select_graphic_rendition = esc_buf },
             else => break :esc .{ .unknown = esc_buf },
         };
@@ -256,6 +299,7 @@ pub const Escape = union(enum) {
             .aux_port_on => try writeParam1Esc(writer, 5, 'i'),
             .aux_port_off => try writeParam1Esc(writer, 4, 'i'),
             .device_status_report => try writeParam1Esc(writer, 6, 'n'),
+            .keycode_sequence => |nm| try writeParam2Esc(writer, nm.@"0", nm.@"1", '~'),
             .unknown, .select_graphic_rendition => |s| try writer.print("\x1b{s}", .{s}),
         }
     }
