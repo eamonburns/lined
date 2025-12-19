@@ -12,7 +12,20 @@ var term_width: usize = 80;
 var term_height: usize = 24;
 const csi = "\x1b[";
 
-/// Cross-platform function to enable unbuffered input from stdin, and disable input echoing.
+/// Cross-platform function to enable "raw mode".
+///
+/// Notable effects (see comments in function body for all effects):
+/// - Unbuffered input from stdin
+/// - Disable input echoing
+/// - Disable output processing: e.g. traslation of \n to \r\n
+/// - Disable special handling of Ctrl sequences
+///     - Ctrl-C
+///     - Ctrl-Q
+///     - Ctrl-S
+///     - Ctrl-V
+///     - Ctrl-Z
+///
+/// Disable raw mode by running `rawModeStop`.
 ///
 /// Non-Windows implementation: [Entering raw mode](https://viewsourcecode.org/snaptoken/kilo/02.enteringRawMode.html) (side note: This tutorial is awesome)
 pub fn rawModeStart() !void {
@@ -96,8 +109,15 @@ pub fn rawModeStop() void {
     _ = stderr.print("\n", .{}) catch 0;
 }
 
+pub const EditLineError = error{
+    ReadFailed,
+    WriteFailed,
+    OutOfMemory,
+    TODOBetterError, // TODO: Better error
+};
+
 /// Reads from `input` until a newline is encountered, and then returns the
-/// resulting line of text. (blocking)
+/// resulting line of text, which must be `free`d.
 ///
 /// Prints to `output` to modify the visible text on the current line.
 ///
@@ -106,8 +126,12 @@ pub fn editLine(
     gpa: Allocator,
     input: *std.Io.Reader,
     output: *std.Io.Writer,
-) error{ ReadFailed, WriteFailed, TODOBetterError }![]const u8 {
-    _ = gpa;
+) EditLineError![]const u8 {
+    var line: std.ArrayList(u8) = .empty;
+    errdefer line.deinit(gpa);
+    // Index of next character to be inserted
+    var i: usize = 0;
+
     while (input.peekByte()) |c| {
         if (c == '\x1b') {
             const esc = Escape.parse(input) catch return error.TODOBetterError;
@@ -122,9 +146,12 @@ pub fn editLine(
             continue;
         }
         input.toss(1);
-        // TODO: Change back to newline
-        // if (c == '\n') break;
-        if (c == 'q') break;
+        // NOTE: In raw mode, <enter> sends a "carriage return", rather than a "new line"
+        if (c == '\r') {
+            try output.writeAll("\r\n"); // NOTE: \r\n in raw mode
+            try output.flush();
+            break;
+        }
         if (c == 'p') {
             log.info("asking for cursor position", .{});
             const dsr: Escape = .device_status_report;
@@ -132,10 +159,16 @@ pub fn editLine(
             try output.flush();
             continue;
         }
+
+        try line.insert(gpa, i, c);
+        log.info("line: '{s}', i: {d}, len: {d}", .{ line.items, i, line.items.len });
+        i += 1;
         if (std.ascii.isControl(c)) {
             log.info("{d}", .{c});
+            try output.print("<{d}>", .{c});
         } else {
             log.info("{d} ({c})", .{ c, c });
+            try output.writeByte(c);
         }
         try output.flush();
     } else |err| switch (err) {
@@ -143,12 +176,11 @@ pub fn editLine(
             log.err("{t}", .{e});
             return e;
         },
-        error.EndOfStream => |e| {
-            log.info("{t}", .{e});
-            return "todo: actually get input (end of stream)";
+        error.EndOfStream => {
+            log.info("end of stream", .{});
         },
     }
-    return "todo: actually get input (quit)";
+    return line.toOwnedSlice(gpa);
 }
 
 test {

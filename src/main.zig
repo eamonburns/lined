@@ -11,9 +11,8 @@ pub fn main() !void {
         .Debug => .{ debug_allocator.allocator(), true },
         .ReleaseFast, .ReleaseSafe, .ReleaseSmall => .{ std.heap.smp_allocator, false },
     };
-    defer if (is_debug) {
-        _ = debug_allocator.deinit();
-    };
+    // FIXME: Why doesn't .deinit report leaks using the custom logFn?
+    defer if (is_debug) std.debug.assert(debug_allocator.deinit() == .ok); // NOTE: If this fails, change the logFn back to default and set log_level to .err
 
     // Initialize log file
     const log_file = try std.fs.cwd().createFile("lined.log", .{ .truncate = true, .lock = .exclusive, .read = false });
@@ -32,6 +31,7 @@ pub fn main() !void {
     defer lined.rawModeStop();
 
     if (lined.editLine(gpa, &stdin.interface, &stdout.interface)) |line| {
+        defer gpa.free(line);
         std.debug.print("line: '{s}'\r\n", .{line}); // \r\n during raw mode
     } else |err| {
         std.debug.print("error: {t}\r\n", .{err}); // \r\n during raw mode
