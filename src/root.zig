@@ -4,6 +4,8 @@ const log = std.log;
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 
+const Escape = @import("escape.zig").Escape;
+
 var original_termios: ?std.posix.termios = null;
 
 var term_width: usize = 80;
@@ -80,18 +82,18 @@ pub fn rawModeStart() !void {
 
 pub fn rawModeStop() void {
     var buf: [512]u8 = undefined;
-    var w = std.fs.File.stdout().writer(&buf);
-    const stdout = &w.interface;
+    var w = std.fs.File.stderr().writer(&buf);
+    const stderr = &w.interface;
 
-    stdout.print(csi ++ "48;2;{d};{d};{d}m", .{ 0x00, 0x00, 0x00 }) catch {}; // bg
-    stdout.print(csi ++ "38;2;{d};{d};{d}m", .{ 0xFF, 0xFF, 0xFF }) catch {}; // fg
+    stderr.print(csi ++ "48;2;{d};{d};{d}m", .{ 0x00, 0x00, 0x00 }) catch {}; // bg
+    stderr.print(csi ++ "38;2;{d};{d};{d}m", .{ 0xFF, 0xFF, 0xFF }) catch {}; // fg
 
     if (builtin.target.os.tag != .windows) {
         if (original_termios) |termios| {
             std.posix.tcsetattr(std.fs.File.stdin().handle, .FLUSH, termios) catch {};
         }
     }
-    _ = stdout.print("\n", .{}) catch 0;
+    _ = stderr.print("\n", .{}) catch 0;
 }
 
 /// Reads from `input` until a newline is encountered, and then returns the
@@ -100,16 +102,40 @@ pub fn rawModeStop() void {
 /// Prints to `output` to modify the visible text on the current line.
 ///
 /// Assumes `rawModeStart` was called before.
-pub fn editLine(gpa: Allocator, input: *std.Io.Reader, output: *std.Io.Writer) error{ ReadFailed, WriteFailed }!?[]const u8 {
+pub fn editLine(
+    gpa: Allocator,
+    input: *std.Io.Reader,
+    output: *std.Io.Writer,
+) error{ ReadFailed, WriteFailed, TODOBetterError }![]const u8 {
     _ = gpa;
-    while (input.takeByte()) |c| {
+    while (input.peekByte()) |c| {
+        if (c == '\x1b') {
+            const esc = Escape.parse(input) catch return error.TODOBetterError;
+            log.info("escape: '{any}'", .{esc});
+            switch (esc) {
+                .cursor_up, .cursor_down, .cursor_forward, .cursor_back => {
+                    try esc.write(output);
+                    try output.flush();
+                },
+                else => {},
+            }
+            continue;
+        }
+        input.toss(1);
         // TODO: Change back to newline
         // if (c == '\n') break;
         if (c == 'q') break;
+        if (c == 'p') {
+            log.info("asking for cursor position", .{});
+            const dsr: Escape = .device_status_report;
+            try dsr.write(output);
+            try output.flush();
+            continue;
+        }
         if (std.ascii.isControl(c)) {
-            try output.print("{d}\r\n", .{c});
+            log.info("{d}", .{c});
         } else {
-            try output.print("{d} ({c})\r\n", .{ c, c });
+            log.info("{d} ({c})", .{ c, c });
         }
         try output.flush();
     } else |err| switch (err) {
@@ -123,4 +149,8 @@ pub fn editLine(gpa: Allocator, input: *std.Io.Reader, output: *std.Io.Writer) e
         },
     }
     return "todo: actually get input (quit)";
+}
+
+test {
+    _ = std.testing.refAllDecls(@This());
 }
