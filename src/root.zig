@@ -138,17 +138,21 @@ pub fn editLine(
             log.info("escape: '{any}'", .{esc});
             switch (esc) {
                 // TODO: Handle going past end of screen
-                .cursor_forward => {
-                    if (i < line.items.len) {
-                        i += 1;
-                        try esc.write(output);
+                .cursor_forward => |n| {
+                    const dist = if (i + n > line.items.len) line.items.len - i else n;
+                    log.info("cursor_forward: {d} (originally: {d})", .{ dist, n });
+                    if (dist > 0) {
+                        i += dist;
+                        try Escape.write(.{ .cursor_forward = @intCast(dist) }, output);
                         try output.flush();
                     }
                 },
-                .cursor_back => {
-                    if (i > 0) {
-                        i -= 1;
-                        try esc.write(output);
+                .cursor_back => |n| {
+                    const dist = if (n > i) i else n;
+                    log.info("cursor_back: {d} (originally: {d})", .{ dist, n });
+                    if (dist > 0) {
+                        i -= dist;
+                        try Escape.write(.{ .cursor_back = @intCast(dist) }, output);
                         try output.flush();
                     }
                 },

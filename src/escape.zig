@@ -212,6 +212,7 @@ pub const Escape = union(enum) {
         log.info("esc_buf: '{s}'", .{esc_buf});
 
         return esc: switch (esc_buf[final_idx]) {
+            // FIXME: All the cursor movement sequences can actually have 2 parameters (like .keycode_sequence)
             'A' => {
                 const n = try parseParam1(esc_buf[param_start..inter_start]) orelse 1;
                 break :esc .{ .cursor_up = n };
