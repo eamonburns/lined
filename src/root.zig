@@ -8,6 +8,7 @@ const Escape = @import("escape.zig").Escape;
 
 var original_termios: ?std.posix.termios = null;
 
+// TODO: Register a callback on window size changes to update these
 var term_width: usize = 80;
 var term_height: usize = 24;
 const csi = "\x1b[";
@@ -66,13 +67,13 @@ pub fn rawModeStart() !void {
         //
         // try std.posix.tcsetattr(handle, .FLUSH, termios);
         //
-        // var ws: std.posix.winsize = undefined;
-        // const err = std.posix.system.ioctl(handle, std.posix.T.IOCGWINSZ, @intFromPtr(&ws));
-        // if (std.posix.errno(err) != .SUCCESS or ws.col == 0 or ws.row == 0) {
-        //     return error.GetTerminalSizeErr;
-        // }
-        // term_width = ws.col;
-        // term_height = ws.row;
+        var ws: std.posix.winsize = undefined;
+        const err = std.posix.system.ioctl(handle, std.posix.T.IOCGWINSZ, @intFromPtr(&ws));
+        if (std.posix.errno(err) != .SUCCESS or ws.col == 0 or ws.row == 0) {
+            return error.GetTerminalSizeErr;
+        }
+        term_width = ws.col;
+        term_height = ws.row;
     } else {
         var csbi: std.os.windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
         const stdouth = try std.os.windows.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE);
@@ -132,6 +133,12 @@ pub fn editLine(
     // Index of next character to be inserted
     var i: usize = 0;
 
+    var original_pos: ?struct { row: u32, col: u32 } = null;
+    log.info("terminal size: rows = {d}, cols = {d}", .{ term_height, term_width });
+
+    try Escape.write(.device_status_report, output);
+    try output.flush();
+
     while (input.peekByte()) |c| {
         if (c == '\x1b') {
             const esc = Escape.parse(input) catch return error.TODOBetterError;
@@ -143,8 +150,8 @@ pub fn editLine(
                     log.info("cursor_forward: {d} (originally: {d})", .{ dist, n });
                     if (dist > 0) {
                         i += dist;
+
                         try Escape.write(.{ .cursor_forward = @intCast(dist) }, output);
-                        try output.flush();
                     }
                 },
                 .cursor_back => |n| {
@@ -153,11 +160,37 @@ pub fn editLine(
                     if (dist > 0) {
                         i -= dist;
                         try Escape.write(.{ .cursor_back = @intCast(dist) }, output);
-                        try output.flush();
+                    }
+                },
+                .cursor_position_report => |nm| {
+                    if (original_pos == null) {
+                        original_pos = .{
+                            .row = nm.@"0",
+                            .col = nm.@"1",
+                        };
+                        log.info("original position: row = {d}, col = {d}", .{ original_pos.?.row, original_pos.?.col });
+                    } else log.info("cursor postion: row = {d}, col = {d}", .{ nm.@"0", nm.@"1" });
+                },
+                .keycode_sequence => |nm| {
+                    const keycode = nm.@"0";
+                    keycode: switch (keycode) {
+                        3 => { // Delete
+                            log.info("delete", .{});
+                            if (i == line.items.len) break :keycode;
+                            _ = line.orderedRemove(i);
+                            log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, i, line.items.len });
+                            // Save position, write characters after cursor, delete characters after cursor, restore position
+                            try output.writeAll("\x1b7"); // TODO: Don't hard code this
+                            try output.writeAll(line.items[i..]);
+                            try Escape.write(.{ .erase_in_line = 0 }, output);
+                            try output.writeAll("\x1b8");
+                        },
+                        else => {},
                     }
                 },
                 else => {},
             }
+            try output.flush();
             continue;
         }
         input.toss(1);
@@ -171,6 +204,23 @@ pub fn editLine(
         if (c == 'p') {
             log.info("asking for cursor position", .{});
             try Escape.write(.device_status_report, output);
+            try output.flush();
+            continue;
+        }
+
+        // Backspace
+        if (c == 127 or c == 8) {
+            log.info("backspace", .{});
+            if (i == 0) continue;
+            i -= 1;
+            _ = line.orderedRemove(i);
+            log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, i, line.items.len });
+            // Save position, write characters after cursor, delete characters after cursor, restore position
+            try Escape.write(.{ .cursor_back = 1 }, output);
+            try output.writeAll("\x1b7"); // TODO: Don't hard code this
+            try output.writeAll(line.items[i..]);
+            try Escape.write(.{ .erase_in_line = 0 }, output);
+            try output.writeAll("\x1b8");
             try output.flush();
             continue;
         }
@@ -190,7 +240,7 @@ pub fn editLine(
             try output.writeAll("\x1b8");
         }
         try output.flush();
-        log.info("line: '{s}', i: {d}, len: {d}", .{ line.items, i, line.items.len });
+        log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, i, line.items.len });
     } else |err| switch (err) {
         error.ReadFailed => |e| {
             log.err("{t}", .{e});
