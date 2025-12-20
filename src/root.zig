@@ -131,7 +131,7 @@ pub fn editLine(
     var line: std.ArrayList(u8) = .empty;
     errdefer line.deinit(gpa);
     // Index of next character to be inserted
-    var i: usize = 0;
+    var cursor: usize = 0;
 
     var original_pos: ?struct { row: u32, col: u32 } = null;
     log.info("terminal size: rows = {d}, cols = {d}", .{ term_height, term_width });
@@ -146,19 +146,19 @@ pub fn editLine(
             switch (esc) {
                 // TODO: Handle going past end of screen
                 .cursor_forward => |n| {
-                    const dist = if (i + n > line.items.len) line.items.len - i else n;
+                    const dist = if (cursor + n > line.items.len) line.items.len - cursor else n;
                     log.info("cursor_forward: {d} (originally: {d})", .{ dist, n });
                     if (dist > 0) {
-                        i += dist;
+                        cursor += dist;
 
                         try Escape.write(.{ .cursor_forward = @intCast(dist) }, output);
                     }
                 },
                 .cursor_back => |n| {
-                    const dist = if (n > i) i else n;
+                    const dist = if (n > cursor) cursor else n;
                     log.info("cursor_back: {d} (originally: {d})", .{ dist, n });
                     if (dist > 0) {
-                        i -= dist;
+                        cursor -= dist;
                         try Escape.write(.{ .cursor_back = @intCast(dist) }, output);
                     }
                 },
@@ -176,12 +176,12 @@ pub fn editLine(
                     keycode: switch (keycode) {
                         3 => { // Delete
                             log.info("delete", .{});
-                            if (i == line.items.len) break :keycode;
-                            _ = line.orderedRemove(i);
-                            log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, i, line.items.len });
+                            if (cursor == line.items.len) break :keycode;
+                            _ = line.orderedRemove(cursor);
+                            log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, cursor, line.items.len });
                             // Save position, write characters after cursor, delete characters after cursor, restore position
                             try output.writeAll("\x1b7"); // TODO: Don't hard code this
-                            try output.writeAll(line.items[i..]);
+                            try output.writeAll(line.items[cursor..]);
                             try Escape.write(.{ .erase_in_line = 0 }, output);
                             try output.writeAll("\x1b8");
                         },
@@ -196,7 +196,7 @@ pub fn editLine(
         input.toss(1);
         // In raw mode, <enter> sends a "carriage return", rather than a "new line"
         if (c == '\r') {
-            try output.writeAll(line.items[i..]);
+            try output.writeAll(line.items[cursor..]);
             try output.writeAll("\r\n"); // \r\n in raw mode
             try output.flush();
             break;
@@ -211,14 +211,14 @@ pub fn editLine(
         // Backspace
         if (c == 127 or c == 8) {
             log.info("backspace", .{});
-            if (i == 0) continue;
-            i -= 1;
-            _ = line.orderedRemove(i);
-            log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, i, line.items.len });
+            if (cursor == 0) continue;
+            cursor -= 1;
+            _ = line.orderedRemove(cursor);
+            log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, cursor, line.items.len });
             // Save position, write characters after cursor, delete characters after cursor, restore position
             try Escape.write(.{ .cursor_back = 1 }, output);
             try output.writeAll("\x1b7"); // TODO: Don't hard code this
-            try output.writeAll(line.items[i..]);
+            try output.writeAll(line.items[cursor..]);
             try Escape.write(.{ .erase_in_line = 0 }, output);
             try output.writeAll("\x1b8");
             try output.flush();
@@ -230,17 +230,17 @@ pub fn editLine(
             try output.flush(); // Do I need this?
             continue;
         }
-        try line.insert(gpa, i, c);
-        try output.writeByte(line.items[i]); // Write inserted character
-        i += 1;
-        if (line.items[i..].len > 0) {
+        try line.insert(gpa, cursor, c);
+        try output.writeByte(line.items[cursor]); // Write inserted character
+        cursor += 1;
+        if (line.items[cursor..].len > 0) {
             // Save position, write characters after cursor, restore position
             try output.writeAll("\x1b7"); // TODO: Don't hard code this
-            try output.writeAll(line.items[i..]);
+            try output.writeAll(line.items[cursor..]);
             try output.writeAll("\x1b8");
         }
         try output.flush();
-        log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, i, line.items.len });
+        log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, cursor, line.items.len });
     } else |err| switch (err) {
         error.ReadFailed => |e| {
             log.err("{t}", .{e});

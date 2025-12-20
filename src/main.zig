@@ -27,11 +27,14 @@ pub fn main() !void {
     var stdin = std.fs.File.stdin().reader(&stdin_buf);
     var stdout = std.fs.File.stdout().writer(&stdout_buf);
 
+    const input = &stdin.interface;
+    const output = &stdout.interface;
+
     try lined.rawModeStart();
     defer lined.rawModeStop();
 
     std.debug.print("> ", .{});
-    if (lined.editLine(gpa, &stdin.interface, &stdout.interface)) |line| {
+    if (lined.editLine(gpa, input, output)) |line| {
         defer gpa.free(line);
         std.debug.print(":'{s}'\r\n", .{line}); // \r\n during raw mode
     } else |err| {
