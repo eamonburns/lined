@@ -1,6 +1,6 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
-const log = std.log;
+const log = std.log.scoped(.lined);
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 
@@ -195,7 +195,7 @@ pub fn editLine(
         }
         input.toss(1);
         // In raw mode, <enter> sends a "carriage return", rather than a "new line"
-        if (c == '\r') {
+        if (c == '\r' or c == 4) {
             try output.writeAll(line.items[cursor..]);
             try output.writeAll("\r\n"); // \r\n in raw mode
             try output.flush();
