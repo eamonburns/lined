@@ -30,9 +30,6 @@ pub fn main() !void {
     const input = &stdin.interface;
     const output = &stdout.interface;
 
-    try lined.rawModeStart();
-    defer lined.rawModeStop();
-
     std.debug.print("> ", .{});
     if (lined.editLine(gpa, input, output)) |line| {
         defer gpa.free(line);
@@ -43,6 +40,9 @@ pub fn main() !void {
 }
 
 pub const std_options: std.Options = .{
+    // .log_scope_levels = &.{
+    //     .{ .scope = .lined, .level = .err },
+    // },
     .logFn = logFn,
 };
 

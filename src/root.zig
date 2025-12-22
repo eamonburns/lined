@@ -13,9 +13,24 @@ var term_width: usize = 80;
 var term_height: usize = 24;
 const csi = "\x1b[";
 
+/// Flag indicating whether the terminal is currently in "raw mode".
+/// This flag is modified by `rawModeStart` and `rawModeStop`, and read by `editLine`.
+///
+/// The user should only manually edit this variable if they will be handling starting/stopping raw mode themselves.
+///
+/// See the doc-comment of `rawModeStart` for more information on the requirements.
+pub var raw_mode = false;
+
+pub const RawModeError = error{
+    GetAttrFailed,
+    SetAttrFailed,
+    GetTerminalSizeFailed,
+};
+
 /// Cross-platform function to enable "raw mode".
 ///
 /// Notable effects (see comments in function body for all effects):
+/// - Set the `raw_mode` flag to `true`
 /// - Unbuffered input from stdin
 /// - Disable input echoing
 /// - Disable output processing: e.g. traslation of \n to \r\n
@@ -29,10 +44,11 @@ const csi = "\x1b[";
 /// Disable raw mode by running `rawModeStop`.
 ///
 /// Non-Windows implementation: [Entering raw mode](https://viewsourcecode.org/snaptoken/kilo/02.enteringRawMode.html) (side note: This tutorial is awesome)
-pub fn rawModeStart() !void {
+pub fn rawModeStart() RawModeError!void {
+    log.debug("start raw mode", .{});
     if (builtin.target.os.tag != .windows) {
         const handle = std.fs.File.stdin().handle;
-        var raw = try std.posix.tcgetattr(handle);
+        var raw = std.posix.tcgetattr(handle) catch return error.GetAttrFailed;
         original_termios = raw;
         raw.iflag.BRKINT = false; // "When BRKINT is turned on, a break condition will cause a SIGINT signal to be sent to the program, like pressing Ctrl-C"
         raw.iflag.ICRNL = false; // Disable translation of '\r' to '\n' (also Ctrl-M to Ctrl-J)
@@ -48,7 +64,7 @@ pub fn rawModeStart() !void {
         raw.lflag.ICANON = false; // Don't buffer lines (disable canonical mode)
         raw.lflag.IEXTEN = false; // Ctrl-V (fixes Ctrl-O on macOS)
         raw.lflag.ISIG = false; // Don't send process control signals (Ctrl-C, Ctrl-Z)
-        try std.posix.tcsetattr(handle, .FLUSH, raw);
+        std.posix.tcsetattr(handle, .FLUSH, raw) catch return error.SetAttrFailed;
 
         // NOTE: This was the old implementation
         // termios.iflag.BRKINT = false;
@@ -70,7 +86,7 @@ pub fn rawModeStart() !void {
         var ws: std.posix.winsize = undefined;
         const err = std.posix.system.ioctl(handle, std.posix.T.IOCGWINSZ, @intFromPtr(&ws));
         if (std.posix.errno(err) != .SUCCESS or ws.col == 0 or ws.row == 0) {
-            return error.GetTerminalSizeErr;
+            return error.GetTerminalSizeFailed;
         }
         term_width = ws.col;
         term_height = ws.row;
@@ -92,9 +108,14 @@ pub fn rawModeStart() !void {
         _ = std.os.windows.kernel32.SetConsoleMode(stdinh, newMode);
         @compileError("Windows is not yet supported :(");
     }
+    raw_mode = true;
 }
 
+/// Undoes all effects of `rawModeStart`.
+///
+/// Sets the `raw_mode` flag to `false`.
 pub fn rawModeStop() void {
+    log.debug("stop raw mode", .{});
     var buf: [512]u8 = undefined;
     var w = std.fs.File.stderr().writer(&buf);
     const stderr = &w.interface;
@@ -115,26 +136,36 @@ pub const EditLineError = error{
     WriteFailed,
     OutOfMemory,
     TODOBetterError, // TODO: Better error
-};
+} || RawModeError;
 
 /// Reads from `input` until a newline is encountered, and then returns the
 /// resulting line of text, which must be `free`d.
 ///
 /// Prints to `output` to modify the visible text on the current line.
 ///
-/// Assumes `rawModeStart` was called before.
+/// Reads the `raw_mode` flag:
+/// - If `false`: starts/stops raw mode for the duration of the function.
+/// - If `true`: does not change raw mode
 pub fn editLine(
     gpa: Allocator,
     input: *std.Io.Reader,
     output: *std.Io.Writer,
 ) EditLineError![]const u8 {
+    // If not in raw mode, this function will handle raw mode automatically
+    const handle_raw_mode = !raw_mode;
+    if (handle_raw_mode) {
+        log.debug("editLine: handling raw mode", .{});
+        try rawModeStart();
+    }
+    defer if (handle_raw_mode) rawModeStop();
+
     var line: std.ArrayList(u8) = .empty;
     errdefer line.deinit(gpa);
     // Index of next character to be inserted
     var cursor: usize = 0;
 
     var original_pos: ?struct { row: u32, col: u32 } = null;
-    log.info("terminal size: rows = {d}, cols = {d}", .{ term_height, term_width });
+    log.debug("terminal size: rows = {d}, cols = {d}", .{ term_height, term_width });
 
     try Escape.write(.device_status_report, output);
     try output.flush();
@@ -142,12 +173,12 @@ pub fn editLine(
     while (input.peekByte()) |c| {
         if (c == '\x1b') {
             const esc = Escape.parse(input) catch return error.TODOBetterError;
-            log.info("escape: '{any}'", .{esc});
+            log.debug("escape: '{any}'", .{esc});
             switch (esc) {
                 // TODO: Handle going past end of screen
                 .cursor_forward => |n| {
                     const dist = if (cursor + n > line.items.len) line.items.len - cursor else n;
-                    log.info("cursor_forward: {d} (originally: {d})", .{ dist, n });
+                    log.debug("cursor_forward: {d} (originally: {d})", .{ dist, n });
                     if (dist > 0) {
                         cursor += dist;
 
@@ -156,7 +187,7 @@ pub fn editLine(
                 },
                 .cursor_back => |n| {
                     const dist = if (n > cursor) cursor else n;
-                    log.info("cursor_back: {d} (originally: {d})", .{ dist, n });
+                    log.debug("cursor_back: {d} (originally: {d})", .{ dist, n });
                     if (dist > 0) {
                         cursor -= dist;
                         try Escape.write(.{ .cursor_back = @intCast(dist) }, output);
@@ -168,17 +199,17 @@ pub fn editLine(
                             .row = nm.@"0",
                             .col = nm.@"1",
                         };
-                        log.info("original position: row = {d}, col = {d}", .{ original_pos.?.row, original_pos.?.col });
-                    } else log.info("cursor postion: row = {d}, col = {d}", .{ nm.@"0", nm.@"1" });
+                        log.debug("original position: row = {d}, col = {d}", .{ original_pos.?.row, original_pos.?.col });
+                    } else log.debug("cursor postion: row = {d}, col = {d}", .{ nm.@"0", nm.@"1" });
                 },
                 .keycode_sequence => |nm| {
                     const keycode = nm.@"0";
                     keycode: switch (keycode) {
                         3 => { // Delete
-                            log.info("delete", .{});
+                            log.debug("delete", .{});
                             if (cursor == line.items.len) break :keycode;
                             _ = line.orderedRemove(cursor);
-                            log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, cursor, line.items.len });
+                            log.debug("line changed: '{s}', i: {d}, len: {d}", .{ line.items, cursor, line.items.len });
                             // Save position, write characters after cursor, delete characters after cursor, restore position
                             try output.writeAll("\x1b7"); // TODO: Don't hard code this
                             try output.writeAll(line.items[cursor..]);
@@ -201,20 +232,14 @@ pub fn editLine(
             try output.flush();
             break;
         }
-        if (c == 'p') {
-            log.info("asking for cursor position", .{});
-            try Escape.write(.device_status_report, output);
-            try output.flush();
-            continue;
-        }
 
         // Backspace
         if (c == 127 or c == 8) {
-            log.info("backspace", .{});
+            log.debug("backspace", .{});
             if (cursor == 0) continue;
             cursor -= 1;
             _ = line.orderedRemove(cursor);
-            log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, cursor, line.items.len });
+            log.debug("line changed: '{s}', i: {d}, len: {d}", .{ line.items, cursor, line.items.len });
             // Save position, write characters after cursor, delete characters after cursor, restore position
             try Escape.write(.{ .cursor_back = 1 }, output);
             try output.writeAll("\x1b7"); // TODO: Don't hard code this
@@ -226,7 +251,7 @@ pub fn editLine(
         }
 
         if (std.ascii.isControl(c)) {
-            log.info("control: {d}", .{c});
+            log.debug("control: {d}", .{c});
             try output.flush(); // Do I need this?
             continue;
         }
@@ -240,7 +265,7 @@ pub fn editLine(
             try output.writeAll("\x1b8");
         }
         try output.flush();
-        log.info("line changed: '{s}', i: {d}, len: {d}", .{ line.items, cursor, line.items.len });
+        log.debug("line changed: '{s}', i: {d}, len: {d}", .{ line.items, cursor, line.items.len });
     } else |err| switch (err) {
         error.ReadFailed => |e| {
             log.err("{t}", .{e});

@@ -1,7 +1,7 @@
 //! Parsing escape sequences
 
 const std = @import("std");
-const log = std.log;
+const log = std.log.scoped(.lined);
 
 /// [Control Sequence Introducer](https://en.wikipedia.org/wiki/ANSI_escape_code#CSIsection)
 const CSI = "\x1b[";
@@ -209,7 +209,7 @@ pub const Escape = union(enum) {
         const final_idx = i;
         const esc_buf = try input.take(buf.len); // Shorten to length of actual escape sequence
 
-        log.info("esc_buf: '{s}'", .{esc_buf});
+        log.debug("esc_buf: '{s}'", .{esc_buf});
 
         return esc: switch (esc_buf[final_idx]) {
             // FIXME: All the cursor movement sequences can actually have 2 parameters (like .keycode_sequence)
