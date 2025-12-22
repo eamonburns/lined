@@ -128,7 +128,8 @@ pub fn rawModeStop() void {
             std.posix.tcsetattr(std.fs.File.stdin().handle, .FLUSH, termios) catch {};
         }
     }
-    _ = stderr.print("\n", .{}) catch 0;
+    stderr.print("\n", .{}) catch {};
+    raw_mode = false;
 }
 
 pub const EditLineError = error{
