@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const log = std.log;
 const builtin = @import("builtin");
 const lined = @import("lined");
@@ -6,32 +7,28 @@ const lined = @import("lined");
 var log_writer: *std.Io.Writer = undefined; // Must be initialized before `logFn` is called
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
-pub fn main() !void {
-    const gpa, const is_debug = switch (builtin.mode) {
-        .Debug => .{ debug_allocator.allocator(), true },
-        .ReleaseFast, .ReleaseSafe, .ReleaseSmall => .{ std.heap.smp_allocator, false },
-    };
-    // FIXME: Why doesn't .deinit report leaks using the custom logFn?
-    defer if (is_debug) std.debug.assert(debug_allocator.deinit() == .ok); // NOTE: If this fails, change the logFn back to default and set log_level to .err
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
 
     // Initialize log file
-    const log_file = try std.fs.cwd().createFile("lined.log", .{ .truncate = true, .lock = .exclusive, .read = false });
-    defer log_file.close();
+    const log_file = try Io.Dir.cwd().createFile(io, "lined.log", .{ .truncate = true, .lock = .exclusive, .read = false });
+    defer log_file.close(io);
     var log_buffer: [128]u8 = undefined;
-    var log_file_writer = log_file.writer(&log_buffer);
+    var log_file_writer = log_file.writer(io, &log_buffer);
     log_writer = &log_file_writer.interface;
 
     // Initialize input and output
     var stdin_buf: [1024]u8 = undefined;
     var stdout_buf: [1024]u8 = undefined;
-    var stdin = std.fs.File.stdin().reader(&stdin_buf);
-    var stdout = std.fs.File.stdout().writer(&stdout_buf);
+    var stdin = Io.File.stdin().reader(io, &stdin_buf);
+    var stdout = Io.File.stdout().writer(io, &stdout_buf);
 
     const input = &stdin.interface;
     const output = &stdout.interface;
 
     std.debug.print("> ", .{});
-    if (lined.editLine(gpa, input, output)) |line| {
+    if (lined.editLine(io, gpa, input, output)) |line| {
         defer gpa.free(line);
         std.debug.print(":'{s}'\r\n", .{line}); // \r\n during raw mode
     } else |err| {
@@ -48,7 +45,7 @@ pub const std_options: std.Options = .{
 
 fn logFn(
     comptime message_level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
+    comptime scope: @EnumLiteral(),
     comptime format: []const u8,
     args: anytype,
 ) void {

@@ -1,5 +1,6 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
+const Io = std.Io;
 const log = std.log.scoped(.lined);
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
@@ -47,7 +48,7 @@ pub const RawModeError = error{
 pub fn rawModeStart() RawModeError!void {
     log.debug("start raw mode", .{});
     if (builtin.target.os.tag != .windows) {
-        const handle = std.fs.File.stdin().handle;
+        const handle = Io.File.stdin().handle;
         var raw = std.posix.tcgetattr(handle) catch return error.GetAttrFailed;
         original_termios = raw;
         raw.iflag.BRKINT = false; // "When BRKINT is turned on, a break condition will cause a SIGINT signal to be sent to the program, like pressing Ctrl-C"
@@ -114,10 +115,10 @@ pub fn rawModeStart() RawModeError!void {
 /// Undoes all effects of `rawModeStart`.
 ///
 /// Sets the `raw_mode` flag to `false`.
-pub fn rawModeStop() void {
+pub fn rawModeStop(io: Io) void {
     log.debug("stop raw mode", .{});
     var buf: [512]u8 = undefined;
-    var w = std.fs.File.stderr().writer(&buf);
+    var w = Io.File.stderr().writer(io, &buf);
     const stderr = &w.interface;
 
     stderr.print(csi ++ "48;2;{d};{d};{d}m", .{ 0x00, 0x00, 0x00 }) catch {}; // bg
@@ -125,7 +126,7 @@ pub fn rawModeStop() void {
 
     if (builtin.target.os.tag != .windows) {
         if (original_termios) |termios| {
-            std.posix.tcsetattr(std.fs.File.stdin().handle, .FLUSH, termios) catch {};
+            std.posix.tcsetattr(Io.File.stdin().handle, .FLUSH, termios) catch {};
         }
     }
     stderr.print("\n", .{}) catch {};
@@ -148,6 +149,7 @@ pub const EditLineError = error{
 /// - If `false`: starts/stops raw mode for the duration of the function.
 /// - If `true`: does not change raw mode
 pub fn editLine(
+    io: Io,
     gpa: Allocator,
     input: *std.Io.Reader,
     output: *std.Io.Writer,
@@ -158,7 +160,7 @@ pub fn editLine(
         log.debug("editLine: handling raw mode", .{});
         try rawModeStart();
     }
-    defer if (handle_raw_mode) rawModeStop();
+    defer if (handle_raw_mode) rawModeStop(io);
 
     var line: std.ArrayList(u8) = .empty;
     errdefer line.deinit(gpa);
